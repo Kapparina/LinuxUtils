@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"errors"
-	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -11,18 +8,20 @@ import (
 	"strings"
 	"syscall"
 
+	"LinuxUtils/pkg/io"
+	"LinuxUtils/pkg/parsing"
 	"github.com/fatih/color"
 	"github.com/fsnotify/fsnotify"
 )
 
 var (
-	red     = color.New(color.FgRed).SprintFunc()
-	yellow  = color.New(color.FgYellow).SprintFunc()
-	green   = color.New(color.FgGreen).SprintFunc()
-	blue    = color.New(color.FgBlue).SprintFunc()
-	magenta = color.New(color.FgMagenta).SprintFunc()
-	cyan    = color.New(color.FgCyan).SprintFunc()
-	white   = color.New(color.FgWhite).SprintFunc()
+	red    = color.New(color.FgRed).SprintFunc()
+	yellow = color.New(color.FgYellow).SprintFunc()
+	green  = color.New(color.FgGreen).SprintFunc()
+	// blue    = color.New(color.FgBlue).SprintFunc()
+	// magenta = color.New(color.FgMagenta).SprintFunc()
+	cyan = color.New(color.FgCyan).SprintFunc()
+	// white   = color.New(color.FgWhite).SprintFunc()
 )
 
 func main() {
@@ -78,16 +77,16 @@ func main() {
 			}
 		}
 	}()
-	targetDir, inputErr := getInput()
+	targetDir, inputErr := parsing.GetInput()
 	if inputErr != nil {
 		log.Fatal(inputErr)
 	}
 	targetDir = strings.TrimSpace(targetDir)
-	pathValidity, pathErr := validatePath(targetDir)
+	pathValidity, pathErr := io.ValidatePath(targetDir)
 	if pathErr != nil || !pathValidity {
 		log.Fatal(pathErr)
 	}
-	relPath := shortenPath(targetDir)
+	relPath := io.ShortenPath(targetDir)
 	log.Printf("Commencing watch: %s\n", relPath)
 	err = watcher.Add(targetDir)
 	if err != nil {
@@ -95,61 +94,4 @@ func main() {
 	}
 	<-done
 	log.Println("Ending watch")
-}
-
-func getInput() (filePath string, inputErr error) {
-	flag.Parse()
-	if arg := flag.Arg(0); len(arg) > 1 {
-		filePath = arg
-	}
-	if len(filePath) > 0 {
-		filePath = strings.TrimSpace(filePath)
-	} else {
-		pipeInput, pipeErr := os.Stdin.Stat()
-		if pipeErr != nil {
-			inputErr = pipeErr
-		}
-		if pipeInput.Mode()&os.ModeNamedPipe != 0 {
-			reader := bufio.NewReader(os.Stdin)
-			input, bufferErr := reader.ReadString('\n')
-			if bufferErr != nil {
-				inputErr = bufferErr
-			} else {
-				filePath = strings.TrimSpace(input)
-			}
-		}
-		if len(filePath) < 1 {
-			cwd, err := os.Getwd()
-			if err != nil {
-				inputErr = err
-			} else {
-				filePath = cwd
-			}
-		}
-	}
-	return
-}
-
-func validatePath(path string) (bool, error) {
-	if len(path) < 1 {
-		return false, errors.New("path is empty")
-	}
-	file, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
-	if file.IsDir() {
-		return true, nil
-	} else {
-		return false, errors.New("path is not a directory")
-	}
-}
-
-func shortenPath(path string) string {
-	elements := strings.Split(path, string(filepath.Separator))
-	if len(elements) <= 3 {
-		return path
-	} else {
-		return filepath.Join(filepath.VolumeName(path), "...", filepath.Base(path))
-	}
 }
