@@ -37,7 +37,7 @@ func main() {
 
 	go func() {
 		sig := <-sigs
-		log.Debugf("Received signal: %v", sig)
+		log.Debug("Received signal", "signal", sig)
 		quit <- struct{}{}
 		done <- true
 	}()
@@ -81,7 +81,7 @@ func main() {
 		log.Fatal(pathErr)
 	}
 	relPath := io.ShortenPath(targetDir)
-	log.Infof("Commencing watch: %s", relPath)
+	log.Info("Commencing watch | ", "target", relPath)
 	err = watcher.Add(targetDir)
 	if err != nil {
 		log.Fatal(err)
