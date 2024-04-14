@@ -1,28 +1,22 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
+	"LinuxUtils/cmd/watch/logging"
 	"LinuxUtils/pkg/io"
 	"LinuxUtils/pkg/parsing"
-	"github.com/fatih/color"
+	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
 )
 
-var (
-	red    = color.New(color.FgRed).SprintFunc()
-	yellow = color.New(color.FgYellow).SprintFunc()
-	green  = color.New(color.FgGreen).SprintFunc()
-	// blue    = color.New(color.FgBlue).SprintFunc()
-	// magenta = color.New(color.FgMagenta).SprintFunc()
-	cyan = color.New(color.FgCyan).SprintFunc()
-	// white   = color.New(color.FgWhite).SprintFunc()
-)
+func init() {
+	log.SetLevel(log.DebugLevel)
+	logging.InitialiseLoggers()
+}
 
 func main() {
 	watcher, err := fsnotify.NewWatcher()
@@ -43,7 +37,7 @@ func main() {
 
 	go func() {
 		sig := <-sigs
-		log.Printf("Received signal: %v\n", sig)
+		log.Debugf("Received signal: %v", sig)
 		quit <- struct{}{}
 		done <- true
 	}()
@@ -56,22 +50,22 @@ func main() {
 					return
 				}
 				if event.Has(fsnotify.Create) {
-					log.Printf("%s %15s\n", green("CREATE:"), filepath.Base(event.Name))
+					logging.CreateLog.Info(event.Name)
 				}
 				if event.Has(fsnotify.Write) {
-					log.Printf("%s %15s\n", yellow("MODIFY:"), filepath.Base(event.Name))
+					logging.ModifyLog.Info(event.Name)
 				}
 				if event.Has(fsnotify.Remove) {
-					log.Printf("%s %15s\n", red("DELETE:"), filepath.Base(event.Name))
+					logging.RemoveLog.Info(event.Name)
 				}
 				if event.Has(fsnotify.Rename) {
-					log.Printf("%s %15s\n", cyan("RENAME:"), filepath.Base(event.Name))
+					logging.RenameLog.Info(event.Name)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Println("error:", err)
+				log.Error("error:", err)
 			case <-quit:
 				return
 			}
@@ -87,11 +81,11 @@ func main() {
 		log.Fatal(pathErr)
 	}
 	relPath := io.ShortenPath(targetDir)
-	log.Printf("Commencing watch: %s\n", relPath)
+	log.Infof("Commencing watch: %s", relPath)
 	err = watcher.Add(targetDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 	<-done
-	log.Println("Ending watch")
+	log.Info("Ending watch")
 }
