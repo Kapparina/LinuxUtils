@@ -37,6 +37,10 @@ func ValidatePath(path string) (PathInfo, error) {
 	if len(path) < 1 {
 		return NewPathInfo(path, false, InvalidPath), errors.New("path is empty")
 	}
+	if strings.HasPrefix(path, "~") {
+		homePath, _ := os.UserHomeDir()
+		path = strings.Replace(path, "~", homePath, 1)
+	}
 	file, err := os.Stat(path)
 	if err != nil {
 		return NewPathInfo(path, false, InvalidPath), err

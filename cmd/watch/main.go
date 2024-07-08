@@ -74,11 +74,11 @@ func main() {
 	}()
 	inputDir, inputErr := parsing.GetInput()
 	if inputErr != nil {
-		log.Fatal(inputErr)
+		log.Fatal("Input error:", "error", inputErr)
 	}
 	pathInfo, pathErr := io.ValidatePath(strings.TrimSpace(inputDir))
 	if pathErr != nil || !pathInfo.Valid {
-		log.Fatal(pathErr)
+		log.Fatal("Path validity error:", "error", pathErr)
 	}
 	logging.MinimalLog.Print(
 		fmt.Sprintf("Watching '%s' for changes...", pathInfo.Truncate()),
@@ -86,7 +86,7 @@ func main() {
 	)
 	err = watcher.Add(pathInfo.Path)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Watcher startup error:", "error", err)
 	}
 	<-shouldExit
 	logging.MinimalLog.Print("Concluding watch...")
