@@ -14,13 +14,20 @@ type LogStyle struct {
 }
 
 var (
-	CreateLog *log.Logger
-	ModifyLog *log.Logger
-	RenameLog *log.Logger
-	RemoveLog *log.Logger
+	MinimalLog *log.Logger
+	CreateLog  *log.Logger
+	ModifyLog  *log.Logger
+	RenameLog  *log.Logger
+	RemoveLog  *log.Logger
 )
 
 func init() {
+	MinimalLog = log.NewWithOptions(
+		os.Stderr,
+		log.Options{
+			ReportTimestamp: false,
+		},
+	)
 	CreateLog = log.NewWithOptions(
 		os.Stderr,
 		log.Options{

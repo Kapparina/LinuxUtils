@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 )
 
 func init() {
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 	logging.InitialiseLoggers()
 }
 
@@ -32,20 +33,20 @@ func main() {
 	}(watcher)
 
 	done := make(chan os.Signal, 1)
+	shouldExit := make(chan bool, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		done <- nil
-	}()
-
-	go func() {
+		var fileName string
 		for {
 			select {
 			case event, ok := <-watcher.Events:
 				if !ok {
+					log.Debug("Something isn't right...")
 					return
+				} else {
+					fileName = filepath.Base(event.Name)
 				}
-				fileName := filepath.Base(event.Name)
 				if event.Has(fsnotify.Create) {
 					logging.CreateLog.Info(fileName)
 				}
@@ -60,29 +61,33 @@ func main() {
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
+					log.Error("Not okay:", "error", err)
 					return
 				}
-				log.Error("error:", err)
+				log.Error("An error occurred:", "error", err)
 			case <-done:
+				log.Debug("Received signal to stop watching...")
+				shouldExit <- true
 				return
 			}
 		}
 	}()
-	targetDir, inputErr := parsing.GetInput()
+	inputDir, inputErr := parsing.GetInput()
 	if inputErr != nil {
 		log.Fatal(inputErr)
 	}
-	targetDir = strings.TrimSpace(targetDir)
-	pathValidity, pathErr := io.ValidatePath(targetDir)
-	if pathErr != nil || !pathValidity {
+	pathInfo, pathErr := io.ValidatePath(strings.TrimSpace(inputDir))
+	if pathErr != nil || !pathInfo.Valid {
 		log.Fatal(pathErr)
 	}
-	relPath := io.ShortenPath(targetDir)
-	log.Info("Commencing watch | ", "target", relPath)
-	err = watcher.Add(targetDir)
+	logging.MinimalLog.Print(
+		fmt.Sprintf("Watching '%s' for changes...", pathInfo.Truncate()),
+		"type", pathInfo.Type,
+	)
+	err = watcher.Add(pathInfo.Path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	<-done
-	log.Info("Ending watch")
+	<-shouldExit
+	logging.MinimalLog.Print("Concluding watch...")
 }

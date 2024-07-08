@@ -7,18 +7,44 @@ import (
 	"strings"
 )
 
-func ValidatePath(path string) (bool, error) {
+type PathType string
+
+type PathInfo struct {
+	Path  string
+	Valid bool
+	Type  PathType
+}
+
+func (p *PathInfo) Truncate() string {
+	return ShortenPath(p.Path)
+}
+
+func NewPathInfo(path string, valid bool, pathType PathType) PathInfo {
+	return PathInfo{
+		Path:  path,
+		Valid: valid,
+		Type:  pathType,
+	}
+}
+
+const (
+	DirectoryPath PathType = "Directory"
+	FilePath      PathType = "File"
+	InvalidPath   PathType = "None"
+)
+
+func ValidatePath(path string) (PathInfo, error) {
 	if len(path) < 1 {
-		return false, errors.New("path is empty")
+		return NewPathInfo(path, false, InvalidPath), errors.New("path is empty")
 	}
 	file, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return NewPathInfo(path, false, InvalidPath), err
 	}
 	if file.IsDir() {
-		return true, nil
+		return NewPathInfo(path, true, DirectoryPath), nil
 	} else {
-		return false, errors.New("path is not a directory")
+		return NewPathInfo(path, true, FilePath), errors.New("path is not a directory")
 	}
 }
 
