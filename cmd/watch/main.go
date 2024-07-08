@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -24,22 +25,17 @@ func main() {
 		log.Fatal(err)
 	}
 	defer func(watcher *fsnotify.Watcher) {
-		err := watcher.Close()
+		err = watcher.Close()
 		if err != nil {
 			log.Fatal(err)
 		}
 	}(watcher)
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT)
-	done := make(chan bool, 1)
-	quit := make(chan struct{})
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		sig := <-sigs
-		log.Debug("Received signal", "signal", sig)
-		quit <- struct{}{}
-		done <- true
+		done <- nil
 	}()
 
 	go func() {
@@ -49,24 +45,25 @@ func main() {
 				if !ok {
 					return
 				}
+				fileName := filepath.Base(event.Name)
 				if event.Has(fsnotify.Create) {
-					logging.CreateLog.Info(event.Name)
+					logging.CreateLog.Info(fileName)
 				}
 				if event.Has(fsnotify.Write) {
-					logging.ModifyLog.Info(event.Name)
+					logging.ModifyLog.Info(fileName)
 				}
 				if event.Has(fsnotify.Remove) {
-					logging.RemoveLog.Info(event.Name)
+					logging.RemoveLog.Info(fileName)
 				}
 				if event.Has(fsnotify.Rename) {
-					logging.RenameLog.Info(event.Name)
+					logging.RenameLog.Info(fileName)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
 				log.Error("error:", err)
-			case <-quit:
+			case <-done:
 				return
 			}
 		}
