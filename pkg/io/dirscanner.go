@@ -1,7 +1,6 @@
 package io
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,17 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
 	"github.com/pkg/errors"
+)
+
+const (
+	// WorkQueueCapacity defines the buffer size for pending directories
+	WorkQueueCapacity = 100
+	// WorkerCount defines the number of concurrent directory scanners
+	WorkerCount = 3
+	// ThrottleInterval controls the scan rate to avoid filesystem hammering
+	ThrottleInterval = 50 * time.Millisecond
+	// DedupInterval prevents rescanning the same directory too frequently
+	DedupInterval = 3 * time.Second
 )
 
 // DirScanner manages directory scanning operations with intelligent
@@ -25,36 +35,27 @@ type DirScanner struct {
 	throttle    *time.Ticker
 }
 
+// NewDirScanner creates a new directory scanner with the specified watcher and quit signal
 func NewDirScanner(watcher *fsnotify.Watcher, quit chan struct{}) *DirScanner {
 	ds := &DirScanner{
 		watcher:    watcher,
-		workQueue:  make(chan string, 100), // Buffer for pending directories
+		workQueue:  make(chan string, WorkQueueCapacity),
 		quitSignal: quit,
 		scanCache:  make(map[string]time.Time),
-		throttle:   time.NewTicker(50 * time.Millisecond), // Throttle scans
+		throttle:   time.NewTicker(ThrottleInterval),
 	}
-
 	// Start the worker pool
-	for i := 0; i < 3; i++ { // 3 concurrent scanners
+	for i := 0; i < WorkerCount; i++ {
 		go ds.worker()
 	}
-
 	return ds
 }
 
 // ScheduleScan adds a directory to be scanned, with deduplication
 func (ds *DirScanner) ScheduleScan(dir string) {
-	// Skip if recently scanned (deduplication)
-	ds.cacheMutex.Lock()
-	lastScan, exists := ds.scanCache[dir]
-	now := time.Now()
-	if exists && now.Sub(lastScan) < 3*time.Second {
-		ds.cacheMutex.Unlock()
+	if ds.recentlyScanned(dir) {
 		return
 	}
-	ds.scanCache[dir] = now
-	ds.cacheMutex.Unlock()
-
 	// Non-blocking send to workQueue
 	select {
 	case ds.workQueue <- dir:
@@ -63,6 +64,19 @@ func (ds *DirScanner) ScheduleScan(dir string) {
 		// Queue full, log and drop
 		log.Debug("Directory scan queue full, skipping path", "path", dir)
 	}
+}
+
+// recentlyScanned checks if the directory was scanned recently
+func (ds *DirScanner) recentlyScanned(dir string) bool {
+	ds.cacheMutex.Lock()
+	defer ds.cacheMutex.Unlock()
+	lastScan, exists := ds.scanCache[dir]
+	now := time.Now()
+	if exists && now.Sub(lastScan) < DedupInterval {
+		return true
+	}
+	ds.scanCache[dir] = now
+	return false
 }
 
 // Shutdown gracefully stops the scanner
@@ -82,79 +96,80 @@ func (ds *DirScanner) worker() {
 		default:
 			// Continue with scan
 		}
-
 		// Mark this scan as active
 		ds.activeScans.Add(1)
-
-		// Perform the scan with error handling
-		func(scanDir string) {
-			defer ds.activeScans.Done()
-
-			// Skip if watcher is known to be closed
-			if isWatcherClosed(ds.watcher) {
-				return
-			}
-
-			// First, try to add the directory itself
-			if err := ds.watcher.Add(scanDir); err != nil {
-				if errors.Is(err, fsnotify.ErrClosed) || strings.Contains(err.Error(), "closed") {
-					return
-				}
-				if !os.IsNotExist(err) {
-					log.Debug("Failed to add directory to watcher", "error", err, "path", scanDir)
-				}
-			}
-
-			// Scan for subdirectories
-			entries, err := os.ReadDir(scanDir)
-			if err != nil {
-				if !os.IsNotExist(err) {
-					log.Debug("Failed to read directory", "error", err, "path", scanDir)
-				}
-				return
-			}
-
-			// Wait for throttle tick to avoid hammering the filesystem
-			<-ds.throttle.C
-
-			// Process subdirectories
-			for _, entry := range entries {
-				// Check quit signal periodically
-				select {
-				case <-ds.quitSignal:
-					return
-				default:
-					// Continue processing
-				}
-
-				if !entry.IsDir() {
-					continue
-				}
-
-				path := filepath.Join(scanDir, entry.Name())
-
-				// Try to add to watcher
-				if err = ds.watcher.Add(path); err != nil {
-					if errors.Is(err, fsnotify.ErrClosed) || strings.Contains(err.Error(), "closed") {
-						return
-					}
-					if !os.IsNotExist(err) {
-						log.Debug("Failed to add subdirectory to watcher", "error", err, "path", path)
-					}
-					continue
-				}
-
-				// Schedule scan of this subdirectory
-				ds.ScheduleScan(path)
-			}
-		}(dir)
+		ds.scanDirectory(dir)
 	}
 }
 
-// Helper function to check if watcher is closed
-func isWatcherClosed(w *fsnotify.Watcher) bool {
-	// Try a non-existent path - will return ErrClosed if watcher is closed
-	tempDir := filepath.Join(os.TempDir(), fmt.Sprintf("nonexistent-%d", time.Now().UnixNano()))
-	err := w.Add(tempDir)
-	return errors.Is(err, fsnotify.ErrClosed) || strings.Contains(err.Error(), "closed")
+// scanDirectory processes a single directory, adding it and its subdirectories to the watcher
+func (ds *DirScanner) scanDirectory(dir string) {
+	defer ds.activeScans.Done()
+	// Skip if watcher is closed
+	if ds.isWatcherClosed() {
+		return
+	}
+	// First, try to add the directory itself
+	if err := ds.watcher.Add(dir); err != nil && !ds.handleWatchError(err, dir, "Failed to add directory to watcher") {
+		return
+	}
+	// Scan for subdirectories
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Debug("Failed to read directory", "error", err, "path", dir)
+		}
+		return
+	}
+	// Wait for throttle tick to avoid hammering the filesystem
+	<-ds.throttle.C
+	// Process subdirectories
+	ds.processSubdirectories(dir, entries)
+}
+
+// processSubdirectories handles the scanning of subdirectories
+func (ds *DirScanner) processSubdirectories(parentDir string, entries []os.DirEntry) {
+	for _, entry := range entries {
+		// Check quit signal periodically
+		select {
+		case <-ds.quitSignal:
+			return
+		default:
+			// Continue processing
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(parentDir, entry.Name())
+		// Try to add to watcher
+		if err := ds.watcher.Add(path); err != nil && !ds.handleWatchError(err, path, "Failed to add subdirectory to watcher") {
+			continue
+		}
+		// Schedule scan of this subdirectory
+		ds.ScheduleScan(path)
+	}
+}
+
+// handleWatchError processes watcher errors, returns false if processing should stop
+func (ds *DirScanner) handleWatchError(err error, path, message string) bool {
+	if errors.Is(err, fsnotify.ErrClosed) || strings.Contains(err.Error(), "closed") {
+		return false
+	}
+	if !os.IsNotExist(err) {
+		log.Debug(message, "error", err, "path", path)
+	}
+	return true
+}
+
+// isWatcherClosed checks if the watcher is closed
+func (ds *DirScanner) isWatcherClosed() bool {
+	select {
+	case <-ds.watcher.Events:
+		return true
+	case <-ds.watcher.Errors:
+		return true
+	default:
+		// Non-blocking check, watcher appears to be open
+		return false
+	}
 }
