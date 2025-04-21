@@ -2,6 +2,7 @@ package logging
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
@@ -103,18 +104,25 @@ func styleLogger(l *log.Logger, style *LogStyle) {
 	l.SetStyles(styles)
 }
 
-func LogEvent(event fsnotify.Event) {
+func LogEvent(basePath string, event fsnotify.Event) {
+	relPath, err := filepath.Rel(basePath, event.Name)
+	if err != nil {
+		log.Errorf("Failed to get relative path for '%s' - Logging absolute path instead!", event.Name)
+		relPath = event.Name
+	}
 	if v, ok := logMap[event.Op]; ok {
-		v.logger.Info(event.Name)
+		v.logger.Info(relPath)
+	} else {
+		log.Warn("Unknown event type", "event", event)
 	}
 	// switch {
 	// case event.Has(fsnotify.Create):
-	// 	logMap[Create].logger.Info(event.Name)
+	// 	logMap[event.Op].logger.Info(event.Name)
 	// case event.Has(fsnotify.Write):
-	// 	logMap[Modify].logger.Info(event.Name)
+	// 	logMap[event.Op].logger.Info(event.Name)
 	// case event.Has(fsnotify.Remove):
-	// 	logMap[Remove].logger.Info(event.Name)
+	// 	logMap[event.Op].logger.Info(event.Name)
 	// case event.Has(fsnotify.Rename):
-	// 	logMap[Rename].logger.Info(event.Name)
+	// 	logMap[event.Op].logger.Info(event.Name)
 	// }
 }

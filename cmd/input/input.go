@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -40,6 +41,12 @@ func ParseInput() (filePath string, inputErr error) {
 				filePath = cwd
 			}
 		}
+	}
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		inputErr = err
+	} else {
+		filePath = abs
 	}
 	return
 }

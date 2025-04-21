@@ -1,13 +1,14 @@
 package main
 
 import (
-	"errors"
+	"io/fs"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
@@ -61,46 +62,7 @@ func main() {
 		quit <- struct{}{}
 		done <- true
 	}()
-	go func() {
-		for {
-			select {
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				log.Errorf("Error: %v", err)
-			case <-quit:
-				return
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				relPath, err := filepath.Rel(targetDir, event.Name)
-				if err != nil {
-					watcher.Errors <- err
-					break
-				}
-				isDir, _ := io.ValidatePath(event.Name)
-				if event.Name != targetDir && isDir {
-					if added, addErr := addToWatchList(event.Name, watcher); !added && addErr != nil {
-						watcher.Errors <- addErr
-						break
-					}
-					log.Debug("Added to watchlist", "path", relPath)
-				}
-				logging.LogEvent(event)
-				if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-					if exists := itemInWatchList(event.Name, watcher); exists {
-						if err = watcher.Remove(event.Name); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
-							watcher.Errors <- err
-							break
-						}
-						log.Debug("Removed from watchlist", "path", relPath)
-					}
-				}
-			}
-		}
-	}()
+	go watchLoop(watcher, quit)
 	log.Info("Commencing watch | ", "target", io.ShortenPath(targetDir))
 	watchErr := watcher.Add(targetDir)
 	if watchErr != nil {
@@ -108,6 +70,70 @@ func main() {
 	}
 	<-done
 	log.Info("Ending watch")
+}
+
+func watchLoop(watcher *fsnotify.Watcher, quit chan struct{}) {
+	var (
+		waitDuration = 100 * time.Millisecond
+		mu           sync.Mutex
+		timers       = make(map[string]*time.Timer)
+		logCallback  = func(e fsnotify.Event) {
+			logging.LogEvent(targetDir, e)
+			mu.Lock()
+			delete(timers, e.Name)
+			mu.Unlock()
+		}
+	)
+	for {
+		select {
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Errorf("Error: %v", err)
+		case <-quit:
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			isDir, _ := io.ValidatePath(event.Name)
+			if event.Name != targetDir && isDir {
+				if added, addErr := addToWatchList(event.Name, watcher); !added && addErr != nil {
+					watcher.Errors <- addErr
+				}
+			}
+			log.Debug("Event", "event", event)
+			logging.LogEvent(targetDir, event)
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				if exists := itemInWatchList(event.Name, watcher); exists {
+					// if err = watcher.Remove(event.Name); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
+					// 	watcher.Errors <- err
+					// }
+				}
+			}
+		}
+	}
+}
+
+func walkRecursively(path string, returnChan chan<- string) error {
+	// files, err := os.ReadDir(path)
+	// if err != nil {
+	// 	return
+	// }
+	return fs.WalkDir(os.DirFS(path), ".", func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			returnChan <- path
+			return nil
+		}
+		return nil
+	})
+	// for _, file := range files {
+	// 	if file.IsDir() {
+	// 		returnChan <- file.Name()
+	// 		go walkRecursively(file.Name(), returnChan)
+	// 	}
+	// }
 }
 
 // addToWatchList attempts to add an item to the specified fsnotify.Watcher.

@@ -1,10 +1,11 @@
 package io
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 func ValidatePath(path string) (bool, error) {
