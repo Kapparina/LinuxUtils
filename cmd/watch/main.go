@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,14 +12,30 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
 
+	"LinuxUtils/cmd/input"
 	"LinuxUtils/cmd/watch/logging"
 	"LinuxUtils/pkg/io"
-	"LinuxUtils/pkg/parsing"
+)
+
+var (
+	targetDir string
+	inputErr  error
 )
 
 func init() {
-	log.SetLevel(log.DebugLevel)
-	logging.InitialiseLoggers()
+	targetDir, inputErr = input.ParseInput()
+	if inputErr != nil {
+		log.Fatal(inputErr)
+	}
+	if input.Debug {
+		log.SetLevel(log.DebugLevel)
+		log.Debug("Debug mode enabled")
+	}
+	targetDir = strings.TrimSpace(targetDir)
+	pathValidity, pathErr := io.ValidatePath(targetDir)
+	if pathErr != nil || !pathValidity {
+		log.Fatal(pathErr)
+	}
 }
 
 func main() {
@@ -44,58 +61,43 @@ func main() {
 		quit <- struct{}{}
 		done <- true
 	}()
-	targetDir, inputErr := parsing.GetInput()
-	if inputErr != nil {
-		log.Fatal(inputErr)
-	}
-	targetDir = strings.TrimSpace(targetDir)
-	pathValidity, pathErr := io.ValidatePath(targetDir)
-	if pathErr != nil || !pathValidity {
-		log.Fatal(pathErr)
-	}
 	go func() {
 		for {
 			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				isDir, _ := io.ValidatePath(event.Name)
-				if event.Name != targetDir && isDir {
-					var relDir string
-					var err error
-					if relDir, err = filepath.Rel(targetDir, event.Name); err != nil {
-						watcher.Errors <- err
-						continue
-					}
-					if added, err := addToWatchList(relDir, watcher); !added && err != nil {
-						watcher.Errors <- err
-						continue
-					}
-				}
-				switch {
-				case event.Has(fsnotify.Create):
-					logging.CreateLog.Info(event.Name)
-				case event.Has(fsnotify.Write):
-					logging.ModifyLog.Info(event.Name)
-				case event.Has(fsnotify.Remove):
-					logging.RemoveLog.Info(event.Name)
-				case event.Has(fsnotify.Rename):
-					logging.RenameLog.Info(event.Name)
-					if isDir {
-						if err := watcher.Remove(event.Name); err != nil {
-							watcher.Errors <- err
-							continue
-						}
-					}
-				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Error("error:", err)
+				log.Errorf("Error: %v", err)
 			case <-quit:
 				return
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				relPath, err := filepath.Rel(targetDir, event.Name)
+				if err != nil {
+					watcher.Errors <- err
+					break
+				}
+				isDir, _ := io.ValidatePath(event.Name)
+				if event.Name != targetDir && isDir {
+					if added, addErr := addToWatchList(event.Name, watcher); !added && addErr != nil {
+						watcher.Errors <- addErr
+						break
+					}
+					log.Debug("Added to watchlist", "path", relPath)
+				}
+				logging.LogEvent(event)
+				if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+					if exists := itemInWatchList(event.Name, watcher); exists {
+						if err = watcher.Remove(event.Name); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
+							watcher.Errors <- err
+							break
+						}
+						log.Debug("Removed from watchlist", "path", relPath)
+					}
+				}
 			}
 		}
 	}()

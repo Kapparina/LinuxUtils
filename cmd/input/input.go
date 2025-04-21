@@ -1,4 +1,4 @@
-package parsing
+package input
 
 import (
 	"bufio"
@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-func GetInput() (filePath string, inputErr error) {
+var Debug bool
+
+func ParseInput() (filePath string, inputErr error) {
+	flag.BoolVar(&Debug, "debug", false, "Enable debug mode")
 	flag.Parse()
 	if arg := flag.Arg(0); len(arg) > 1 {
 		filePath = arg
@@ -19,6 +22,7 @@ func GetInput() (filePath string, inputErr error) {
 		if pipeErr != nil {
 			inputErr = pipeErr
 		}
+		//goland:noinspection GoDfaErrorMayBeNotNil
 		if pipeInput.Mode()&os.ModeNamedPipe != 0 {
 			reader := bufio.NewReader(os.Stdin)
 			input, bufferErr := reader.ReadString('\n')
