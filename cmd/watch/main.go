@@ -3,14 +3,17 @@ package main
 import (
 	"os"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/charmbracelet/log"
+	"github.com/fsnotify/fsnotify"
 
 	"LinuxUtils/cmd/watch/logging"
 	"LinuxUtils/pkg/io"
 	"LinuxUtils/pkg/parsing"
-	"github.com/charmbracelet/log"
-	"github.com/fsnotify/fsnotify"
 )
 
 func init() {
@@ -19,14 +22,14 @@ func init() {
 }
 
 func main() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatal(err)
+	watcher, newWatchErr := fsnotify.NewWatcher()
+	if newWatchErr != nil {
+		log.Fatal(newWatchErr)
 	}
 	defer func(watcher *fsnotify.Watcher) {
-		err := watcher.Close()
-		if err != nil {
-			log.Fatal(err)
+		newWatchErr = watcher.Close()
+		if newWatchErr != nil {
+			log.Fatal(newWatchErr)
 		}
 	}(watcher)
 
@@ -41,7 +44,15 @@ func main() {
 		quit <- struct{}{}
 		done <- true
 	}()
-
+	targetDir, inputErr := parsing.GetInput()
+	if inputErr != nil {
+		log.Fatal(inputErr)
+	}
+	targetDir = strings.TrimSpace(targetDir)
+	pathValidity, pathErr := io.ValidatePath(targetDir)
+	if pathErr != nil || !pathValidity {
+		log.Fatal(pathErr)
+	}
 	go func() {
 		for {
 			select {
@@ -49,17 +60,34 @@ func main() {
 				if !ok {
 					return
 				}
-				if event.Has(fsnotify.Create) {
+				isDir, _ := io.ValidatePath(event.Name)
+				if event.Name != targetDir && isDir {
+					var relDir string
+					var err error
+					if relDir, err = filepath.Rel(targetDir, event.Name); err != nil {
+						watcher.Errors <- err
+						continue
+					}
+					if added, err := addToWatchList(relDir, watcher); !added && err != nil {
+						watcher.Errors <- err
+						continue
+					}
+				}
+				switch {
+				case event.Has(fsnotify.Create):
 					logging.CreateLog.Info(event.Name)
-				}
-				if event.Has(fsnotify.Write) {
+				case event.Has(fsnotify.Write):
 					logging.ModifyLog.Info(event.Name)
-				}
-				if event.Has(fsnotify.Remove) {
+				case event.Has(fsnotify.Remove):
 					logging.RemoveLog.Info(event.Name)
-				}
-				if event.Has(fsnotify.Rename) {
+				case event.Has(fsnotify.Rename):
 					logging.RenameLog.Info(event.Name)
+					if isDir {
+						if err := watcher.Remove(event.Name); err != nil {
+							watcher.Errors <- err
+							continue
+						}
+					}
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -71,21 +99,31 @@ func main() {
 			}
 		}
 	}()
-	targetDir, inputErr := parsing.GetInput()
-	if inputErr != nil {
-		log.Fatal(inputErr)
-	}
-	targetDir = strings.TrimSpace(targetDir)
-	pathValidity, pathErr := io.ValidatePath(targetDir)
-	if pathErr != nil || !pathValidity {
-		log.Fatal(pathErr)
-	}
-	relPath := io.ShortenPath(targetDir)
-	log.Info("Commencing watch | ", "target", relPath)
-	err = watcher.Add(targetDir)
-	if err != nil {
-		log.Fatal(err)
+	log.Info("Commencing watch | ", "target", io.ShortenPath(targetDir))
+	watchErr := watcher.Add(targetDir)
+	if watchErr != nil {
+		log.Fatal(watchErr)
 	}
 	<-done
 	log.Info("Ending watch")
+}
+
+// addToWatchList attempts to add an item to the specified fsnotify.Watcher.
+// Returns true if successful, false if the item is already in the watch list.
+// Returns an error if the addition to the watcher fails.
+func addToWatchList(item string, watcher *fsnotify.Watcher) (bool, error) {
+	if itemInWatchList(item, watcher) {
+		return false, nil
+	}
+	if err := watcher.Add(item); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func itemInWatchList(item string, watcher *fsnotify.Watcher) bool {
+	watchList := watcher.WatchList()
+	slices.Sort(watchList)
+	_, found := slices.BinarySearch(watchList, item)
+	return found
 }
